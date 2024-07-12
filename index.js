@@ -142,6 +142,64 @@ async function makeMarketConstants() {
   }
 }
 
+async function makeTournaments() {
+  const client = await pool.connect();
+  try {
+    const removeQuery = `DELETE FROM tournaments WHERE data_feed='huge_data'`;
+    await client.query(removeQuery);
+    const maxTournamentIdQuery = `
+      SELECT MAX(id) AS max_id FROM tournaments
+    `;
+    const maxTournamentIdResult = await client.query(maxTournamentIdQuery);
+    const maxTournamentId = maxTournamentIdResult.rows[0].max_id || 0; // If no records exist, set maxId to 0
+
+    let tournamentId = parseInt(maxTournamentId) + 1;
+
+    const sportsQuery = `SELECT * FROM sports WHERE data_feed='huge_data'`
+    const sports = await client.query(sportsQuery)
+
+    const countriesQuery = `SELECT * FROM countries WHERE data_feed='huge_data'`
+    const countries = await client.query(countriesQuery)
+
+    for (const sport of sports.rows) {
+      for (const country of countries.rows) {
+        console.log(`Sport: ${sport.reference_id}, Country: ${country.reference_id}`);
+        // console.log("RESPONSE:",  `https://demofeed.betapi.win/FeedApi/tournaments?sport_id=${sport.reference_id}&country_id=${country.reference_id}`)
+        const response = await axios.get(
+          `https://demofeed.betapi.win/FeedApi/tournaments?sport_id=${sport.reference_id}&country_id=${country.reference_id}`
+        );
+        console.log("RESPONSE:", response.data)
+        const tournaments = response.data.data;
+        console.log("TOURNAMENTS: ", tournaments);
+        if (!tournaments) continue;
+        for (const tournament of tournaments) {
+          const dataFeed = "huge_data";
+          const insertQuery = `
+            INSERT INTO tournaments (id, reference_id, sport_id, country_id, name, abbr, created_at, updated_at, deleted_at, "order", is_translated, flag, data_feed)
+            VALUES ($1, $2, $3, $4, $5, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL, $6, $7, $8, $9)
+          `;
+          await client.query(insertQuery, [
+            tournamentId,
+            tournament.id,
+            tournament.sport_country.sport_id,
+            tournament.sport_country.country_id,
+            tournament.name,
+            tournamentId,
+            false,
+            "",
+            dataFeed,
+          ]);
+          tournamentId++;
+        }
+      }
+    }
+  } catch (error) {
+    console.error("An error occurred during making tournaments:", error.message);
+  } finally {
+    client.release();
+  }
+}
+
 async function makeCountries() {
   const client = await pool.connect();
   try {
@@ -656,7 +714,8 @@ async function main() {
 
   // await makeSports();
   // await makeCountries();
-  await makeMarketConstants();
+  // await makeMarketConstants();
+  await makeTournaments();
   console.log("Data successfully saved to PostgreSQL database.");
 }
 
