@@ -2,6 +2,7 @@ const { Pool } = require("pg");
 const axios = require("axios");
 const OpenAI = require("openai");
 require("dotenv").config();
+const fs = require('fs').promises;
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -145,55 +146,69 @@ async function makeMarketConstants() {
 async function makeTournaments() {
   const client = await pool.connect();
   try {
+    await client.query('BEGIN'); // Start a transaction
+
     const removeQuery = `DELETE FROM tournaments WHERE data_feed='huge_data'`;
     await client.query(removeQuery);
-    const maxTournamentIdQuery = `
-      SELECT MAX(id) AS max_id FROM tournaments
-    `;
+
+    const maxTournamentIdQuery = `SELECT MAX(id) AS max_id FROM tournaments`;
     const maxTournamentIdResult = await client.query(maxTournamentIdQuery);
     const maxTournamentId = maxTournamentIdResult.rows[0].max_id || 0; // If no records exist, set maxId to 0
 
     let tournamentId = parseInt(maxTournamentId) + 1;
 
-    const sportsQuery = `SELECT * FROM sports WHERE data_feed='huge_data'`
-    const sports = await client.query(sportsQuery)
+    const sportsQuery = `SELECT * FROM sports WHERE data_feed='huge_data'`;
+    const sports = await client.query(sportsQuery);
 
-    const countriesQuery = `SELECT * FROM countries WHERE data_feed='huge_data'`
-    const countries = await client.query(countriesQuery)
+    const countriesQuery = `SELECT * FROM countries WHERE data_feed='huge_data'`;
+    const countries = await client.query(countriesQuery);
 
-    for (const sport of sports.rows) {
-      for (const country of countries.rows) {
-        console.log(`Sport: ${sport.reference_id}, Country: ${country.reference_id}`);
-        // console.log("RESPONSE:",  `https://demofeed.betapi.win/FeedApi/tournaments?sport_id=${sport.reference_id}&country_id=${country.reference_id}`)
+    for (let i = 0; i < sports.rows.length; i++) {
+      const sport = sports.rows[i];
+      for (let j = 0; j < countries.rows.length; j++) {
+        const country = countries.rows[j];
+        console.log(`Fetching tournaments for Sport: ${sport.reference_id}, Country: ${country.reference_id}`);
+
         const response = await axios.get(
           `https://demofeed.betapi.win/FeedApi/tournaments?sport_id=${sport.reference_id}&country_id=${country.reference_id}`
         );
-        console.log("RESPONSE:", response.data)
+
+        console.log("Response Data:", response.data);
+
         const tournaments = response.data.data;
-        console.log("TOURNAMENTS: ", tournaments);
         if (!tournaments) continue;
-        for (const tournament of tournaments) {
+
+        for (let k = 0; k < tournaments.length; k++) {
+          const tournament = tournaments[k];
           const dataFeed = "huge_data";
-          const insertQuery = `
-            INSERT INTO tournaments (id, reference_id, sport_id, country_id, name, abbr, created_at, updated_at, deleted_at, "order", is_translated, flag, data_feed)
-            VALUES ($1, $2, $3, $4, $5, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL, $6, $7, $8, $9)
-          `;
-          await client.query(insertQuery, [
-            tournamentId,
-            tournament.id,
-            tournament.sport_country.sport_id,
-            tournament.sport_country.country_id,
-            tournament.name,
-            tournamentId,
-            false,
-            "",
-            dataFeed,
-          ]);
-          tournamentId++;
+
+          try {
+            const insertQuery = `
+              INSERT INTO tournaments (id, reference_id, sport_id, country_id, name, abbr, created_at, updated_at, deleted_at, "order", is_translated, flag, data_feed)
+              VALUES ($1, $2, $3, $4, $5, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL, $6, $7, $8, $9)
+            `;
+            await client.query(insertQuery, [
+              tournamentId,
+              tournament.id,
+              tournament.sport_country.sport_id,
+              tournament.sport_country.country_id,
+              tournament.name,
+              tournamentId,
+              false,
+              "",
+              dataFeed,
+            ]);
+            tournamentId++;
+          } catch (insertError) {
+            console.error(`Failed to insert tournament ${tournament.id}:`, insertError.message);
+          }
         }
       }
     }
+
+    await client.query('COMMIT'); // Commit the transaction
   } catch (error) {
+    await client.query('ROLLBACK'); // Rollback the transaction on error
     console.error("An error occurred during making tournaments:", error.message);
   } finally {
     client.release();
@@ -383,13 +398,13 @@ async function makeDictionaries() {
     // await client.query(rollbackMarketsQuery);
     // await client.query(rollbackOutcomesQuery);
 
-    await makeDictionariesThemes();
-    await makeDictionariesSports();
-    await makeDictionariesCountries();
+    // await makeDictionariesThemes();
+    // await makeDictionariesSports();
+    // await makeDictionariesCountries();
     await makeDictionariesTournaments();
-    await makeDictionariesCompetitors();
-    await makeDictionariesMarkets();
-    await makeDictionariesOutcomes();
+    // await makeDictionariesCompetitors();
+    // await makeDictionariesMarkets();
+    // await makeDictionariesOutcomes();
   } catch (error) {
     console.error("Error makeDictionaries", error.message);
   } finally {
@@ -646,7 +661,7 @@ async function makeDictionariesCompetitors() {
 async function makeDictionariesMarkets() {
   const client = await pool.connect();
   try {
-    const queryText = `SELECT * FROM market_constants WHERE is_translated=false ORDER BY id`;
+    const queryText = `SELECT * FROM market_constants WHERE is_translated=false AND data_feed='huge_data' ORDER BY id`;
     const result = await client.query(queryText);
     const rows = result.rows;
 
@@ -676,7 +691,7 @@ async function makeDictionariesMarkets() {
 async function makeDictionariesOutcomes() {
   const client = await pool.connect();
   try {
-    const queryText = `SELECT * FROM outcome_constants WHERE is_translated=false ORDER BY id`;
+    const queryText = `SELECT * FROM outcome_constants WHERE is_translated=false AND data_feed='huge_data' ORDER BY id`;
     const result = await client.query(queryText);
     const rows = result.rows;
 
@@ -706,7 +721,72 @@ async function makeDictionariesOutcomes() {
   }
 }
 
+async function dbSet() {
+  const client = await pool.connect();
+  try {
+    // Start a transaction
+    await client.query('BEGIN');
+
+    // Select all rows from the sports table
+    const selectQuery = `SELECT id, reference_id FROM countries WHERE data_feed='huge_data'`;
+    const selectResult = await client.query(selectQuery);
+    const rows = selectResult.rows;
+
+    // Update the flag field for each row
+    for (let row of rows) {
+      const updateQuery = 'UPDATE countries SET flag = $1 WHERE id = $2';
+      const flagValue = `country_${row.reference_id}.svg`; // Append .svg to the slug field
+      await client.query(updateQuery, [flagValue, row.id]);
+    }
+
+    // Commit the transaction
+    await client.query('COMMIT');
+  } catch (err) {
+    console.error("An error occurred:", err.message);
+    // Roll back the transaction in case of an error
+    await client.query('ROLLBACK');
+  } finally {
+    client.release();
+  }
+}
+
+async function makeMarketGroup() {
+  const client = await pool.connect();
+  try {
+      const maxIdQuery = `
+          SELECT MAX(id) AS max_id FROM market_groups
+      `;
+      const maxIdResult = await client.query(maxIdQuery);
+      const maxId = maxIdResult.rows[0].max_id || 0; // If no records exist, set maxId to 0
+      let id = parseInt(maxId) + 1;
+
+      console.log("ASDFASDF")
+      const data = await fs.readFile('game_types.json', 'utf8'); 
+      console.log("ASDFASDFdfads")
+      const jsonData = JSON.parse(data);
+
+      // Accessing the data
+      for (const item of jsonData) {
+          console.log(`ID: ${item.id}`);
+          console.log(`Name: ${item.name}`);
+          const insertQuery = `INSERT INTO market_groups ("id", market_group, created_at, updated_at) 
+              VALUES ($1, $2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`;
+          const result = await client.query(insertQuery, [
+              id,
+              item.name,
+          ]);
+          console.log('Inserted:', result.rowCount);
+          id++;
+      }
+  } catch (err) {
+      console.error('Error:', err);
+  } finally {
+      await client.end();
+  }
+}
+
 async function main() {
+  // await dbSet()
   // await makeMarketConstants();
   // await makeCountries();
   // await makeSportGroup();
@@ -715,7 +795,8 @@ async function main() {
   // await makeSports();
   // await makeCountries();
   // await makeMarketConstants();
-  await makeTournaments();
+  // await makeTournaments();
+  await makeMarketGroup();
   console.log("Data successfully saved to PostgreSQL database.");
 }
 
